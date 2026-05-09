@@ -38,7 +38,8 @@ def run_mlp():
 
 def attention(Q: np.array, K: np.array, V: np.array):
     qk_norm = Q @ K.T / np.sqrt(K.shape[-1])
-    causal_mask = np.triu(np.full(qk_norm.shape, -np.inf), k=1) # upper triangular matrix to mask out future tokens during training
+    offset = K.shape[0] - Q.shape[0]
+    causal_mask = np.triu(np.full(qk_norm.shape, -np.inf), k=1+offset) # upper triangular matrix to mask out future tokens during prefill
     return softmax(causal_mask + qk_norm) @ V
 
 class MultiHeadAttention:
@@ -63,8 +64,10 @@ class MultiHeadAttention:
         self.kv_cache = [None] * n_heads
 
     def forward(self, tokens: np.array):
+        is_decode = self.use_kv_cache and self.kv_cache[0] is not None
+
         seq_len = tokens.shape[0]
-        out = np.empty((seq_len,0))
+        out = np.empty((1 if is_decode else seq_len,0)) 
         for i in range(self.n_heads):
             W_q = self.W_q_all[:, i, :]
             b_q = self.b_q_all[i]
@@ -76,15 +79,19 @@ class MultiHeadAttention:
             if self.use_kv_cache:
                 if self.kv_cache[i] is None:
                     # prefill
+                    X_q = tokens
                     K, V = tokens @ W_k + b_k, tokens @ W_v + b_v
                 else:
                     # decode
+                    X_q = tokens[-1:]
                     K, V = self.kv_cache[i]
-                    K, V = np.vstack((K, tokens[-1:] @ W_k + b_k)), np.vstack((V, np.array(tokens[-1]) @ W_v + b_v))
+                    K, V = np.vstack((K, tokens[-1:] @ W_k + b_k)), np.vstack((V, np.array(tokens[-1:]) @ W_v + b_v))
                 self.kv_cache[i] = K, V
             else:
+                # no kv cache = every decode recomputes QKV for every previous token
+                X_q = tokens
                 K, V = tokens @ W_k + b_k, tokens @ W_v + b_v
-            out = np.hstack((out, attention(tokens @ W_q + b_q, K, V)))
+            out = np.hstack((out, attention(X_q @ W_q + b_q, K, V)))
 
         return out @ self.W_o + self.b_o
 
@@ -121,7 +128,7 @@ class TransformerBlock:
         X = self.multihead_attention.forward(X)
 
         # TODO add dropout for training
-        X += X_orig
+        X += X_orig[-X.shape[0]:]
         X_orig = X.copy()
 
         # Post-Norm
