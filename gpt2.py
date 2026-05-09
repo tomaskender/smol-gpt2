@@ -41,85 +41,86 @@ def attention(Q: np.array, K: np.array, V: np.array):
     causal_mask = np.triu(np.full(qk_norm.shape, -np.inf), k=1) # upper triangular matrix to mask out future tokens during training
     return softmax(causal_mask + qk_norm) @ V
 
-def multihead_attention(tokens: np.array, n_heads: int, W_allblocks: dict, block_id: int):
-    d_model = tokens.shape[-1]
-    seq_len = tokens.shape[0]
-    d_head = d_model // n_heads
+class MultiHeadAttention:
+    def __init__(self, n_heads: int, d_model: int, W_allblocks: dict, block_id: int):
+        self.n_heads = n_heads
+        self.d_head = d_model // self.n_heads
 
-    W_qkv_all = W_allblocks[f"h.{block_id}.attn.c_attn.weight"].reshape((d_model, 3, n_heads, d_head))
-    W_q_all = W_qkv_all[:, 0, :, :]
-    W_k_all = W_qkv_all[:, 1, :, :]
-    W_v_all = W_qkv_all[:, 2, :, :]
+        self.W_o = W_allblocks[f"h.{block_id}.attn.c_proj.weight"]
+        # self.W_o = GEN.normal(0, 1, (d_model, d_model))
+        self.b_o = W_allblocks[f"h.{block_id}.attn.c_proj.bias"]
+        # self.b_o = GEN.normal(0, 1, (d_model,))
 
-    b_qkv_all = W_allblocks[f"h.{block_id}.attn.c_attn.bias"].reshape((3, n_heads, d_head))
-    b_q_all, b_k_all, b_v_all = b_qkv_all
+        W_qkv_all = W_allblocks[f"h.{block_id}.attn.c_attn.weight"].reshape((d_model, 3, n_heads, self.d_head))
+        self.W_q_all = W_qkv_all[:, 0, :, :]
+        self.W_k_all = W_qkv_all[:, 1, :, :]
+        self.W_v_all = W_qkv_all[:, 2, :, :]
 
-    out = np.empty((seq_len,0))
-    for i in range(n_heads):
-        W_q = W_q_all[:, i, :]
-        # W_q = GEN.normal(0, 1, (d_model, d_head))
-        b_q = b_q_all[i]
-        # b_q = GEN.normal(0, 1, (d_head))
-        W_k = W_k_all[:, i, :]
-        # W_k = GEN.normal(0, 1, (d_model, d_head))
-        b_k = b_k_all[i]
-        # b_k = GEN.normal(0, 1, (d_head))
-        W_v = W_v_all[:, i, :]
-        # W_v = GEN.normal(0, 1, (d_model, d_head))
-        b_v = b_v_all[i]
-        # b_v = GEN.normal(0, 1, (d_head))
-        out = np.hstack((out, attention(tokens @ W_q + b_q, tokens @ W_k + b_k, tokens @ W_v + b_v)))
+        b_qkv_all = W_allblocks[f"h.{block_id}.attn.c_attn.bias"].reshape((3, n_heads, self.d_head))
+        self.b_q_all, self.b_k_all, self.b_v_all = b_qkv_all
 
-    W_o = W_allblocks[f"h.{block_id}.attn.c_proj.weight"]
-    # W_o = GEN.normal(0, 1, (d_model, d_model))
-    b_o = W_allblocks[f"h.{block_id}.attn.c_proj.bias"]
-    # b_o = GEN.normal(0, 1, (d_model,))
-    return out @ W_o + b_o
+    def forward(self, tokens: np.array):
+        seq_len = tokens.shape[0]
+        out = np.empty((seq_len,0))
+        for i in range(self.n_heads):
+            W_q = self.W_q_all[:, i, :]
+            b_q = self.b_q_all[i]
+            W_k = self.W_k_all[:, i, :]
+            b_k = self.b_k_all[i]
+            W_v = self.W_v_all[:, i, :]
+            b_v = self.b_v_all[i]
+            out = np.hstack((out, attention(tokens @ W_q + b_q, tokens @ W_k + b_k, tokens @ W_v + b_v)))
 
-def transformer_block(X: np.array, W_allblocks: dict, block_id: int):
-    # d_model = X.shape[-1]
-    # d_hidden = d_model * 4
+        return out @ self.W_o + self.b_o
 
-    W_ln1 = W_allblocks[f"h.{block_id}.ln_1.weight"]
-    # W_ln1 = GEN.normal(0, 1, (d_model,))
-    b_ln1 = W_allblocks[f"h.{block_id}.ln_1.bias"]
-    # b_ln1 = GEN.normal(0, 1, (d_model,))
-    W_ln2 = W_allblocks[f"h.{block_id}.ln_2.weight"]
-    # W_ln2 = GEN.normal(0, 1, (d_model,))
-    b_ln2 = W_allblocks[f"h.{block_id}.ln_2.bias"]
-    # b_ln2 = GEN.normal(0, 1, (d_model,))
-    W_h = W_allblocks[f"h.{block_id}.mlp.c_fc.weight"]
-    # W_h = GEN.normal(0, 1, (d_model, d_hidden))
-    b_h = W_allblocks[f"h.{block_id}.mlp.c_fc.bias"]
-    # b_h = GEN.normal(0, 1, d_hidden)
-    W_o = W_allblocks[f"h.{block_id}.mlp.c_proj.weight"]
-    # W_o = GEN.normal(0, 1, (d_hidden, d_model))
-    b_o = W_allblocks[f"h.{block_id}.mlp.c_proj.bias"]
-    # b_o = GEN.normal(0, 1, d_model)
+class TransformerBlock:
+    def __init__(self, W_allblocks: dict, block_id: int, d_model: int):
+        # d_model = X.shape[-1]
+        # d_hidden = d_model * 4
+        
+        self.W_ln1 = W_allblocks[f"h.{block_id}.ln_1.weight"]
+        # self.W_ln1 = GEN.normal(0, 1, (d_model,))
+        self.b_ln1 = W_allblocks[f"h.{block_id}.ln_1.bias"]
+        # self.b_ln1 = GEN.normal(0, 1, (d_model,))
+        self.W_ln2 = W_allblocks[f"h.{block_id}.ln_2.weight"]
+        # self.W_ln2 = GEN.normal(0, 1, (d_model,))
+        self.b_ln2 = W_allblocks[f"h.{block_id}.ln_2.bias"]
+        # self.b_ln2 = GEN.normal(0, 1, (d_model,))
+        self.W_h = W_allblocks[f"h.{block_id}.mlp.c_fc.weight"]
+        # self.W_h = GEN.normal(0, 1, (d_model, d_hidden))
+        self.b_h = W_allblocks[f"h.{block_id}.mlp.c_fc.bias"]
+        # self.b_h = GEN.normal(0, 1, d_hidden)
+        self.W_o = W_allblocks[f"h.{block_id}.mlp.c_proj.weight"]
+        # self.W_o = GEN.normal(0, 1, (d_hidden, d_model))
+        self.b_o = W_allblocks[f"h.{block_id}.mlp.c_proj.bias"]
+        # self.b_o = GEN.normal(0, 1, d_model)
 
-    # Pre-Norm + residual connection
-    X_orig = X.copy()
-    X = layernorm(X)
-    X = X * W_ln1 + b_ln1
+        self.multihead_attention = MultiHeadAttention(12, d_model, W_allblocks, block_id)
 
-    X = multihead_attention(X, 12, W_allblocks, block_id)
+    def forward(self, X: np.array):
+        # Pre-Norm + residual connection
+        X_orig = X.copy()
+        X = layernorm(X)
+        X = X * self.W_ln1 + self.b_ln1
 
-    # TODO add dropout for training
-    X += X_orig
-    X_orig = X.copy()
+        X = self.multihead_attention.forward(X)
 
-    # Post-Norm
-    X = layernorm(X)
-    X = X * W_ln2 + b_ln2
+        # TODO add dropout for training
+        X += X_orig
+        X_orig = X.copy()
 
-    # 2-layer MLP with residual connectionp2 
-    X = X @ W_h + b_h
-    X = gelu(X)
-    X = X @ W_o + b_o
-    # TODO add dropout for training
-    X += X_orig
+        # Post-Norm
+        X = layernorm(X)
+        X = X * self.W_ln2 + self.b_ln2
 
-    return X
+        # 2-layer MLP with residual connectionp2 
+        X = X @ self.W_h + self.b_h
+        X = gelu(X)
+        X = X @ self.W_o + self.b_o
+        # TODO add dropout for training
+        X += X_orig
+
+        return X
 
 def gpt2_infere(text: str):
     MAX_SENTENCE_LEN = 1024
@@ -143,13 +144,15 @@ def gpt2_infere(text: str):
     token_embeddings = wte[tokens]
     X_in = token_embeddings + position_embeddings
 
+    transformer_blocks = [TransformerBlock(weights, i, X_in.shape[-1]) for i in range(12)]
+
     print("\033[95mGPT:", end="", flush=True)
     for _ in range(20):
         assert(len(tokens) <= MAX_SENTENCE_LEN)
         X = X_in
 
-        for i in range(12):
-            X = transformer_block(X, weights, i)
+        for block in transformer_blocks:
+            X = block.forward(X)
 
         X = layernorm(X)
         X = X * weights["ln_f.weight"] + weights["ln_f.bias"]
