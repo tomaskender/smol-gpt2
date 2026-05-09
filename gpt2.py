@@ -42,7 +42,7 @@ def attention(Q: np.array, K: np.array, V: np.array):
     return softmax(causal_mask + qk_norm) @ V
 
 class MultiHeadAttention:
-    def __init__(self, n_heads: int, d_model: int, W_allblocks: dict, block_id: int):
+    def __init__(self, n_heads: int, d_model: int, W_allblocks: dict, block_id: int, use_kv_cache: bool):
         self.n_heads = n_heads
         self.d_head = d_model // self.n_heads
 
@@ -59,6 +59,9 @@ class MultiHeadAttention:
         b_qkv_all = W_allblocks[f"h.{block_id}.attn.c_attn.bias"].reshape((3, n_heads, self.d_head))
         self.b_q_all, self.b_k_all, self.b_v_all = b_qkv_all
 
+        self.use_kv_cache = use_kv_cache
+        self.kv_cache = [None] * n_heads
+
     def forward(self, tokens: np.array):
         seq_len = tokens.shape[0]
         out = np.empty((seq_len,0))
@@ -69,12 +72,24 @@ class MultiHeadAttention:
             b_k = self.b_k_all[i]
             W_v = self.W_v_all[:, i, :]
             b_v = self.b_v_all[i]
-            out = np.hstack((out, attention(tokens @ W_q + b_q, tokens @ W_k + b_k, tokens @ W_v + b_v)))
+
+            if self.use_kv_cache:
+                if self.kv_cache[i] is None:
+                    # prefill
+                    K, V = tokens @ W_k + b_k, tokens @ W_v + b_v
+                else:
+                    # decode
+                    K, V = self.kv_cache[i]
+                    K, V = np.vstack((K, tokens[-1:] @ W_k + b_k)), np.vstack((V, np.array(tokens[-1]) @ W_v + b_v))
+                self.kv_cache[i] = K, V
+            else:
+                K, V = tokens @ W_k + b_k, tokens @ W_v + b_v
+            out = np.hstack((out, attention(tokens @ W_q + b_q, K, V)))
 
         return out @ self.W_o + self.b_o
 
 class TransformerBlock:
-    def __init__(self, W_allblocks: dict, block_id: int, d_model: int):
+    def __init__(self, W_allblocks: dict, block_id: int, d_model: int, use_kv_cache: bool):
         # d_model = X.shape[-1]
         # d_hidden = d_model * 4
         
@@ -95,7 +110,7 @@ class TransformerBlock:
         self.b_o = W_allblocks[f"h.{block_id}.mlp.c_proj.bias"]
         # self.b_o = GEN.normal(0, 1, d_model)
 
-        self.multihead_attention = MultiHeadAttention(12, d_model, W_allblocks, block_id)
+        self.multihead_attention = MultiHeadAttention(12, d_model, W_allblocks, block_id, use_kv_cache=use_kv_cache)
 
     def forward(self, X: np.array):
         # Pre-Norm + residual connection
@@ -122,7 +137,7 @@ class TransformerBlock:
 
         return X
 
-def gpt2_infere(text: str):
+def gpt2_infere(text: str, use_cache: bool = True):
     MAX_SENTENCE_LEN = 1024
 
     tokenizer = GPT2Tokenizer(
@@ -144,7 +159,7 @@ def gpt2_infere(text: str):
     token_embeddings = wte[tokens]
     X_in = token_embeddings + position_embeddings
 
-    transformer_blocks = [TransformerBlock(weights, i, X_in.shape[-1]) for i in range(12)]
+    transformer_blocks = [TransformerBlock(weights, i, X_in.shape[-1], use_cache) for i in range(12)]
 
     print("\033[95mGPT:", end="", flush=True)
     for _ in range(20):
@@ -177,7 +192,7 @@ def run_gpt2():
     gpt2_infere("Chelsea want to win the Premier League")
     gpt2_infere("Tottenham want to win the Premier League")
     gpt2_infere("Liverpool want to win the Premier League")
-    gpt2_infere("Arsenal want to win the Premier League")
-    gpt2_infere("Brighton want to win the Premier League")
+    gpt2_infere("Arsenal want to win the Premier League", use_cache=False)
+    gpt2_infere("Brighton want to win the Premier League", use_cache=False)
 
 run_gpt2()
